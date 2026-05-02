@@ -1,0 +1,75 @@
+from dataclasses import asdict # Built-in, no install needed
+from django.shortcuts import render
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated, AllowAny
+
+from .models import Profile
+from .serializers import SignupSerializer, ProfileSerializer
+from Advisor.services import AdvisorService # Ensure this matches your folder/file
+
+class UserSignupView(APIView):
+    """
+    CREATE: Handles /auth/signup/
+    Registers a new user; Profile is created automatically by the Serializer.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = SignupSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+            return Response({
+                "message": "User created successfully",
+                "user_id": user.id
+            }, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class ProfileUpdateView(APIView):
+    """
+    GET: Retrieves the profile and triggers AI recommendation updates.
+    PATCH: Updates specific profile fields (Monthly Income, Goals, etc.).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # 1. Directly access the profile (created during signup)
+        profile = request.user.profile
+        
+        # 2. Layer 4: Intelligence Update
+        # The AI doesn't 'create' the profile; it only populates the recommendation fields
+        if profile.is_recommendation_at_stale():
+            # Call your service to get fresh advice for the frontend
+            advisor = AdvisorService()
+            # This method should handle the Gemini logic to update profile fields
+            advisor.generate_personalized_recommendation(profile) 
+            profile.refresh_from_db()
+
+        serializer = ProfileSerializer(profile)
+        return Response(serializer.data)
+
+    def patch(self, request):
+        """
+        Partial update for settings or onboarding changes.
+        """
+        profile = request.user.profile
+        serializer = ProfileSerializer(profile, data=request.data, partial=True)
+        
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class AccountDeleteView(APIView):
+    """
+    DELETE: Removes the user and the associated profile via database cascade.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request):
+        user = request.user
+        user.delete()
+        return Response({
+            "message": "Account and associated profile deleted successfully."
+        }, status=status.HTTP_204_NO_CONTENT)

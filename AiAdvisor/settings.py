@@ -32,7 +32,7 @@ IP_ADDRESS = os.getenv('IP_ADDRESS')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = [IP_ADDRESS, '127.0.0.1']
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -147,10 +147,4 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ]
 }
-
-
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:8081",     
-    "http://127.0.0.1:8081",
-    "http://" + IP_ADDRESS + ":8081",     
-]
+CORS_ALLOW_ALL_ORIGINS = True

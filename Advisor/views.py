@@ -38,7 +38,7 @@ class MessageCreateView(APIView):
             return Response({"error": "Conversation not found"}, status=404)
 
         # 1. Save User Message
-        ChatMessage.objects.create(conversation=conversation, role='user', content=content)
+        user_msg = ChatMessage.objects.create(conversation=conversation, role='user', content=content)
 
         # 2. Build Context
         profile = request.user.profile # This is the Profile model instance
@@ -72,4 +72,21 @@ class MessageCreateView(APIView):
         )
 
         conversation.save() 
-        return Response(ChatMessageSerializer(ai_msg).data, status=status.HTTP_201_CREATED)
+        
+        return Response({
+            "user_msg": ChatMessageSerializer(user_msg).data,
+            "ai_msg": ChatMessageSerializer(ai_msg).data
+        }, status=status.HTTP_201_CREATED)
+
+class ConversationDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        try:
+            conversation = Conversation.objects.get(id=pk, user=request.user)
+            conversation.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except Conversation.DoesNotExist:
+            return Response({"error": "Conversation not found"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)

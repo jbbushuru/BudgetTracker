@@ -1,35 +1,11 @@
-from django.apps import AppConfig
+# file to seed categories to the DB when the server is run
+from django.core.management.base import BaseCommand
+from Finance.models import Category
 
+class Command(BaseCommand):
+    help = 'Seeds the database with default system categories'
 
-class FinanceConfig(AppConfig):
-    name = 'Finance'
-    #logic for seeding categories
-    def ready(self):
-        print("Finance app ready logic executing...")
-        # 1. Connect to post_migrate for seeding after migrations
-        from django.db.models.signals import post_migrate
-        post_migrate.connect(self.run_seed_categories, sender=self)
-        
-        # 2. Also attempt to seed immediately on startup (for regular restarts)
-        import sys
-        if 'runserver' in sys.argv:
-            try:
-                self.seed_categories()
-            except Exception as e:
-                print(f"Initial category seeding skipped: {e}")
-
-    def run_seed_categories(self, **kwargs):
-        """
-        Wrapper for post_migrate signal to trigger seeding.
-        """
-        print("Running category seeding via post_migrate...")
-        try:
-            self.seed_categories()
-        except Exception as e:
-            print(f"Error during category seeding: {e}")
-
-    def seed_categories(self):
-        from .models import Category
+    def handle(self, *args, **options):
         categories = [
             { "name": "Education", "icon_name": "school", "color_code": "#FFD93D", "is_essential": True },
             { "name": "Entertainment", "icon_name": "film", "color_code": "#9B59B6", "is_essential": False },
@@ -42,15 +18,22 @@ class FinanceConfig(AppConfig):
             { "name": "Utilities", "icon_name": "flash", "color_code": "#FF8F5E", "is_essential": True },
             { "name": "Transaction Costs", "icon_name": "currency-exchange", "color_code": "#D32F2F", "is_essential": True }
         ]
+
+        self.stdout.write('Seeding categories...')
         
         for cat_data in categories:
-            Category.objects.update_or_create(
+            category, created = Category.objects.update_or_create(
                 name=cat_data['name'],
                 defaults={
                     'icon_name': cat_data['icon_name'],
                     'color_code': cat_data['color_code'],
                     'is_essential': cat_data['is_essential'],
-                    'owner': None,
+                    'owner': None,  # System default
                 }
             )
-        print("System categories seeded/updated successfully.")
+            if created:
+                self.stdout.write(self.style.SUCCESS(f'Created category: {category.name}'))
+            else:
+                self.stdout.write(f'Updated category: {category.name}')
+
+        self.stdout.write(self.style.SUCCESS('Successfully seeded categories'))

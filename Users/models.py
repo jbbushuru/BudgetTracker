@@ -25,6 +25,8 @@ class Profile(models.Model):
     fixed_costs = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     existing_savings = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     savings_target = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    #added the budget field
+    budget = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     spending_temperament = models.CharField(max_length=50, blank=True)
     
     # AI Recommendation fields

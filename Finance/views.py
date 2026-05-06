@@ -12,6 +12,41 @@ from django.db.models import Sum
 from django.utils import timezone
 from decimal import Decimal
 
+# added a function to handle processing of a single transaction. 
+# I separated this part from the initial SMSIngestionView to prevent duplicate code for Batch processing
+def process_single_transaction(user, raw_sms, audit_result):
+    """
+    Handles categorization and database creation.
+    Priority: 1. User History (Smart Match) -> 2. AI Suggestion -> 3. Pending
+    """
+    # 1. Look for a previous category for this recipient (Smart Match)
+    existing_category_id = Transaction.objects.filter(
+        user=user, 
+        recipient=audit_result.get('recipient'),
+        is_pending_categorization=False
+    ).order_by('-timestamp').values_list('category_id', flat=True).first()
+
+    # 2. If no history, use the AI's suggested category
+    ai_category_id = None
+    if not existing_category_id and 'suggested_category' in audit_result:
+        ai_category_id = Category.objects.filter(
+            name=audit_result['suggested_category']
+        ).values_list('id', flat=True).first()
+
+    final_category_id = existing_category_id or ai_category_id
+
+    return Transaction.objects.create(
+        user=user,
+        source='MPESA',
+        transaction_type=audit_result.get('transaction_type', 'OUT'),
+        sms_batch=raw_sms,
+        amount=audit_result.get('amount'),
+        fee=audit_result.get('fee', 0.00),
+        recipient=audit_result.get('recipient'),
+        category_id=final_category_id,
+        is_pending_categorization=False if final_category_id else True
+    )
+
 class SMSIngestionView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -28,18 +63,10 @@ class SMSIngestionView(APIView):
         if not audit_result:
             return Response({"error": "Failed to audit data"}, status=500)
 
-        # 2. Create the transaction record
+        # 2. Process and save using shared logic (includes Smart Matching)
         try:
-            transaction = Transaction.objects.create(
-                user=request.user,
-                source='MPESA',
-                transaction_type=audit_result.get('transaction_type', 'OUT'),
-                sms_batch=raw_sms,
-                amount=audit_result.get('amount'),
-                fee=audit_result.get('fee', 0.00),
-                recipient=audit_result.get('recipient'),
-                is_pending_categorization=True
-            )
+            #creation of a transaction done hear using the function i "added" in line 17
+            transaction = process_single_transaction(request.user, raw_sms, audit_result)
             return Response({
                 "needs_categorization": transaction.is_pending_categorization,
                 "transaction_id": transaction.id,
@@ -51,6 +78,102 @@ class SMSIngestionView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=400)
+
+#added logic to handle SMS batches
+class SMSBatchIngestionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        transactions_data = request.data.get('transactions', [])
+        
+        if not transactions_data:
+            return Response({"error": "No transactions provided"}, status=400)
+
+        parser = SMSParserService()
+        processed_count = 0
+        errors = []
+
+        # 1. FAST-TRACK: Filter out transactions we can categorize via keywords
+        remaining_sms = []
+        for item in transactions_data:
+            raw_sms = item.get('body')
+            if not raw_sms:
+                continue
+
+            category_name = parser.keyword_categorizer.get_category(raw_sms)
+            audit_result = parser.keyword_categorizer.extract_basic_info(raw_sms) if category_name else None
+
+            if category_name and audit_result:
+                try:
+                    category = Category.objects.filter(name=category_name).first()
+                    
+                    Transaction.objects.create(
+                        user=request.user,
+                        source='MPESA',
+                        transaction_type=audit_result.get('transaction_type', 'OUT'),
+                        sms_batch=raw_sms,
+                        amount=audit_result.get('amount'),
+                        fee=0.0,
+                        recipient=audit_result.get('recipient'),
+                        category=category,
+                        is_pending_categorization=False
+                    )
+                    processed_count += 1
+                except Exception as e:
+                    errors.append(f"Fast-track error: {str(e)}")
+            else:
+                remaining_sms.append(raw_sms)
+
+        # 2. AI BATCH: Process only the unknown transactions in chunks
+        if remaining_sms:
+            CHUNK_SIZE = 10
+            for i in range(0, len(remaining_sms), CHUNK_SIZE):
+                # Safety delay to stay under the tight 5-15 RPM limit
+                if i > 0:
+                    import time
+                    time.sleep(2)
+
+                chunk_texts = remaining_sms[i:i + CHUNK_SIZE]
+                audit_results = parser.parse_mpesa_batch(chunk_texts)
+
+                for raw_sms, audit_result in zip(chunk_texts, audit_results):
+                    if not audit_result or not audit_result.get('recipient'):
+                        errors.append(f"Failed to parse: {raw_sms[:20]}...")
+                        continue
+
+                    try:
+                        process_single_transaction(request.user, raw_sms, audit_result)
+                        processed_count += 1
+                    except Exception as e:
+                        errors.append(str(e))
+
+        return Response({
+            "processed_count": processed_count,
+            "fast_tracked": processed_count - len([e for e in errors if "Failed to parse" in e]), # Approximate
+            "errors": errors
+        }, status=status.HTTP_201_CREATED)
+
+class PendingTransactionsView(APIView):
+    """
+    GET: Returns all transactions that need categorization for the current user.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        pending = Transaction.objects.filter(
+            user=request.user, 
+            is_pending_categorization=True
+        ).order_by('-timestamp')
+        
+        data = [{
+            "id": t.id,
+            "amount": float(t.amount),
+            "recipient": t.recipient,
+            "timestamp": t.timestamp,
+            "type": t.transaction_type
+        } for t in pending]
+        
+        return Response(data)
 
 class CategorizeTransactionView(APIView):
     """
@@ -168,9 +291,8 @@ class BudgetSummaryView(APIView):
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
         # 4. Calculation Logic
-        # We use the monthly_income you've stored in your Profile
-        monthly_income = profile.monthly_income
-        remaining_budget = (monthly_income + total_received) - total_spent
+        #used the budget field i added to calculate available balance.
+        remaining_budget = (profile.budget) - total_spent
 
         # 5. Spent Per Category breakdown
         # We group by the category name and sum the amounts
@@ -181,7 +303,9 @@ class BudgetSummaryView(APIView):
             timestamp__year=now.year
         ).values(
             'category__name', 
-            'category__icon_name', 
+            'category__icon_name',
+            #added color code as a field returned
+            'category__color_code',
             'category__is_essential'
         ).annotate(
             total_amount=Sum('amount')
@@ -190,7 +314,8 @@ class BudgetSummaryView(APIView):
         return Response({
             "month": now.strftime("%B %Y"),
             "summary": {
-                "income_baseline": float(monthly_income),
+                #made budget the income baseline.
+                "income_baseline": float(profile.budget),
                 "total_received": float(total_received),
                 "total_spent": float(total_spent),
                 "remaining_balance": float(remaining_budget)
@@ -199,6 +324,8 @@ class BudgetSummaryView(APIView):
                 {
                     "category": item['category__name'] or "Uncategorized",
                     "icon": item['category__icon_name'],
+                    #added colo code to be sent as part of the response
+                    "color": item['category__color_code'] or "#94A3B8",
                     "is_essential": item['category__is_essential'],
                     "amount_spent": float(item['total_amount'])
                 } for item in category_breakdown

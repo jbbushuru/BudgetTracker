@@ -14,6 +14,22 @@ class SignupSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['username', 'email', 'phone_no', 'password', 'f_name', 'l_name']
+    
+    # added validation checks for existing users to return descriptive error messages for duplicate entries.
+    def validate_email(self, value):
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return value
+
+    def validate_username(self, value):
+        if User.objects.filter(username=value).exists():
+            raise serializers.ValidationError("A user with this username already exists.")
+        return value
+
+    def validate_phone_no(self, value):
+        if User.objects.filter(phone_number=value).exists() or Profile.objects.filter(phone_number=value).exists():
+            raise serializers.ValidationError("A user with this phone number already exists.")
+        return value
 
     def create(self, validated_data):
         # Extract profile-specific identity data
@@ -51,6 +67,10 @@ class ProfileSerializer(serializers.ModelSerializer):
         model = Profile
         fields = [
             '_id', 'user_id', 'f_name', 'l_name', 'phone_number',
+            # switched to each field instead of the nested groupings, I however did not delete the nested groupings
+            'age', 'occupation', 'location', 'monthly_income', 
+            'savings_target', 'budget', 'fixed_costs', 'existing_savings',
+            'financial_goal', 'risk_appetite', 'spending_temperament',
             'demographic', 'financial_context', 'behavioural_context'
         ]
 
@@ -64,7 +84,11 @@ class ProfileSerializer(serializers.ModelSerializer):
     def get_financial_context(self, obj):
         return {
             "monthly_income": float(obj.monthly_income),
-            "savings_target": float(getattr(obj, 'savings_target', 0.00))
+            "savings_target": float(getattr(obj, 'savings_target', 0.00)),
+            # added some more fields in financial context. Idk what difference this made.
+            "budget": float(getattr(obj, 'budget', 0.00)),
+            "fixed_costs": float(getattr(obj, 'fixed_costs', 0.00)),
+            "existing_savings": float(getattr(obj, 'existing_savings', 0.00))
         }
 
     def get_behavioural_context(self, obj):

@@ -5,11 +5,14 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
-from .models import Transaction
-from .models import Category
+# imported additional FinancialGoal model and corresponding serializer
+from .models import Transaction, Category, FinancialGoal
+from .serializers import FinancialGoalSerializer, TransactionSerializer
 from .ai_parser import SMSParserService
 from django.db.models import Sum
 from django.utils import timezone
+#imported to handle date and time calculations for the weekly aggregations
+from datetime import timedelta, datetime
 from decimal import Decimal
 
 # added a function to handle processing of a single transaction. 
@@ -44,6 +47,7 @@ def process_single_transaction(user, raw_sms, audit_result):
         fee=audit_result.get('fee', 0.00),
         recipient=audit_result.get('recipient'),
         category_id=final_category_id,
+        timestamp=audit_result.get('timestamp'),
         is_pending_categorization=False if final_category_id else True
     )
 
@@ -51,14 +55,15 @@ class SMSIngestionView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        raw_sms = request.data.get('sms_text')
+        # Support both 'sms_text' and 'body' for flexibility
+        raw_sms = request.data.get('sms_text') or request.data.get('body')
         
         if not raw_sms:
             return Response({"error": "No SMS text provided"}, status=400)
 
         # 1. AI Auditor determines IN/OUT and strips the data
         parser = SMSParserService()
-        audit_result = parser.parse_mpesa_sms(raw_sms)
+        audit_result = parser.parse_mpesa_sms(raw_sms, user=request.user)
 
         if not audit_result:
             return Response({"error": "Failed to audit data"}, status=500)
@@ -93,48 +98,18 @@ class SMSBatchIngestionView(APIView):
         processed_count = 0
         errors = []
 
-        # 1. FAST-TRACK: Filter out transactions we can categorize via keywords
-        remaining_sms = []
-        for item in transactions_data:
-            raw_sms = item.get('body')
-            if not raw_sms:
-                continue
-
-            category_name = parser.keyword_categorizer.get_category(raw_sms)
-            audit_result = parser.keyword_categorizer.extract_basic_info(raw_sms) if category_name else None
-
-            if category_name and audit_result:
-                try:
-                    category = Category.objects.filter(name=category_name).first()
-                    
-                    Transaction.objects.create(
-                        user=request.user,
-                        source='MPESA',
-                        transaction_type=audit_result.get('transaction_type', 'OUT'),
-                        sms_batch=raw_sms,
-                        amount=audit_result.get('amount'),
-                        fee=0.0,
-                        recipient=audit_result.get('recipient'),
-                        category=category,
-                        is_pending_categorization=False
-                    )
-                    processed_count += 1
-                except Exception as e:
-                    errors.append(f"Fast-track error: {str(e)}")
-            else:
-                remaining_sms.append(raw_sms)
-
-        # 2. AI BATCH: Process only the unknown transactions in chunks
-        if remaining_sms:
-            CHUNK_SIZE = 10
-            for i in range(0, len(remaining_sms), CHUNK_SIZE):
-                # Safety delay to stay under the tight 5-15 RPM limit
+        # All transactions are now handled by the AI to ensure accurate parsing of dates/amounts
+        all_sms = [item.get('body') for item in transactions_data if item.get('body')]
+        
+        if all_sms:
+            CHUNK_SIZE = 30
+            for i in range(0, len(all_sms), CHUNK_SIZE):
                 if i > 0:
                     import time
-                    time.sleep(2)
+                    time.sleep(1) # RPM limit safety
 
-                chunk_texts = remaining_sms[i:i + CHUNK_SIZE]
-                audit_results = parser.parse_mpesa_batch(chunk_texts)
+                chunk_texts = all_sms[i:i + CHUNK_SIZE]
+                audit_results = parser.parse_mpesa_batch(chunk_texts, user=request.user)
 
                 for raw_sms, audit_result in zip(chunk_texts, audit_results):
                     if not audit_result or not audit_result.get('recipient'):
@@ -311,6 +286,21 @@ class BudgetSummaryView(APIView):
             total_amount=Sum('amount')
         ).order_by('-total_amount')
 
+        # 6. Weekly Spend (Monday to Today)
+        current_time = timezone.localtime(timezone.now())
+        days_since_monday = current_time.weekday()
+        monday_date = (current_time - timedelta(days=days_since_monday)).date()
+        
+        weekly_spend = []
+        for i in range(days_since_monday + 1):
+            day_date = monday_date + timedelta(days=i)
+            day_total = Transaction.objects.filter(
+                user=user,
+                transaction_type='OUT',
+                timestamp__date=day_date
+            ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            weekly_spend.append(float(day_total))
+
         return Response({
             "month": now.strftime("%B %Y"),
             "summary": {
@@ -318,7 +308,8 @@ class BudgetSummaryView(APIView):
                 "income_baseline": float(profile.budget),
                 "total_received": float(total_received),
                 "total_spent": float(total_spent),
-                "remaining_balance": float(remaining_budget)
+                "remaining_balance": float(remaining_budget),
+                "weekly_spend": weekly_spend
             },
             "category_spending": [
                 {
@@ -331,3 +322,86 @@ class BudgetSummaryView(APIView):
                 } for item in category_breakdown
             ]
         })
+
+# I implemented standard RESTful endpoints for the goals:
+# GET /api/finance/goals/: Fetch all goals for the user.
+# POST /api/finance/goals/: Create a new goal.
+# PATCH /api/finance/goals/<id>/: Update a goal (e.g., adding savings).
+# DELETE /api/finance/goals/<id>/: Remove a goal.
+class FinancialGoalView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        goals = FinancialGoal.objects.filter(user=request.user).order_by('-created_at')
+        serializer = FinancialGoalSerializer(goals, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = FinancialGoalSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class FinancialGoalDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        try:
+            goal = FinancialGoal.objects.get(pk=pk, user=request.user)
+            serializer = FinancialGoalSerializer(goal, data=request.data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except FinancialGoal.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+class TransactionListView(APIView):
+    """
+    GET: Returns a paginated list of transactions, with optional month/year filtering.
+    Endpoint: /finance/transactions/?month=5&year=2026&page=1
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        month = request.query_params.get('month')
+        year = request.query_params.get('year')
+        
+        # Base Queryset
+        queryset = Transaction.objects.filter(user=user).order_by('-timestamp')
+        
+        # Filtering by date if provided
+        if month:
+            queryset = queryset.filter(timestamp__month=month)
+        if year:
+            queryset = queryset.filter(timestamp__year=year)
+            
+        # Basic Manual Pagination
+        page_size = 20
+        try:
+            page = int(request.query_params.get('page', 1))
+        except ValueError:
+            page = 1
+            
+        start = (page - 1) * page_size
+        end = start + page_size
+        
+        transactions = queryset[start:end]
+        serializer = TransactionSerializer(transactions, many=True)
+        
+        return Response({
+            "transactions": serializer.data,
+            "has_next": queryset.count() > end,
+            "page": page,
+            "total_count": queryset.count()
+        })
+
+    def delete(self, request, pk):
+        try:
+            goal = FinancialGoal.objects.get(pk=pk, user=request.user)
+            goal.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except FinancialGoal.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)

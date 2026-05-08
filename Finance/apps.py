@@ -40,7 +40,13 @@ class FinanceConfig(AppConfig):
             { "name": "Transportation", "icon_name": "car", "color_code": "#3498DB", "is_essential": True },
             { "name": "Travel", "icon_name": "airplane", "color_code": "#6B46C1", "is_essential": False },
             { "name": "Utilities", "icon_name": "flash", "color_code": "#FF8F5E", "is_essential": True },
-            { "name": "Transaction Costs", "icon_name": "currency-exchange", "color_code": "#D32F2F", "is_essential": True }
+            #added new categories
+            { "name": "Transaction Costs", "icon_name": "currency-exchange", "color_code": "#D32F2F", "is_essential": True },
+            { "name": "Savings", "icon_name": "wallet", "color_code": "#2ECC71", "is_essential": True },
+            { "name": "Data & Airtime", "icon_name": "phone-portrait", "color_code": "#00A8FF", "is_essential": True },
+            { "name": "MPesa Reversal", "icon_name": "refresh-circle", "color_code": "#7F8C8D", "is_essential": False },
+            { "name": "MPesa Withdrawal", "icon_name": "arrow-up-circle", "color_code": "#C0392B", "is_essential": True },
+            { "name": "MPesa Deposit", "icon_name": "arrow-down-circle", "color_code": "#27AE60", "is_essential": True }
         ]
         
         for cat_data in categories:

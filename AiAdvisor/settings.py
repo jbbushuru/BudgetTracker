@@ -89,20 +89,19 @@ WSGI_APPLICATION = 'AiAdvisor.wsgi.application'
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
 DATABASES = {
-    'default': dj_database_url.config(default=os.getenv('DATABASE_URL'))   
-    # {
-        # 'ENGINE': 'django.db.backends.mysql',
-        # 'NAME': 'advisor',
-        # 'USER': 'root',
-        # 'PASSWORD': '',
-        # 'HOST': '127.0.0.1',
-        # 'PORT': '3306',
-        # 'OPTIONS': {
-        #     'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-        #     # This ensures Django treats it as MariaDB
+    'default': {
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME':os.getenv('MYSQL_DATABASE'),
+        'USER': os.getenv('MYSQLUSER'),
+        'PASSWORD': os.getenv('MYSQLPASSWORD'),
+        'HOST': os.getenv('MYSQLHOST'),
+        'PORT': os.getenv('MYSQLPORT'),
+        'OPTIONS': {
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+            # This ensures Django treats it as MariaDB
         
-        # },
-    # }
+        },
+    }
 }
 
 

@@ -1,4 +1,5 @@
 # finance/models.py
+from django.utils import timezone
 from django.db import models
 from django.conf import settings
 
@@ -35,5 +36,25 @@ class Transaction(models.Model):
     fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     recipient = models.CharField(max_length=100)
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True)
-    timestamp = models.DateTimeField(auto_now_add=True)
+    #adjusted the timestamp to prevent setting the time for every transaction as the time of the request
+    #this allows the AI to overwrite the time parsed from the SMS
+    timestamp = models.DateTimeField(default=timezone.now)
     is_pending_categorization = models.BooleanField(default=True) # For the pop-up logic
+
+# I added the FinancialGoal model to track progress. It includes:
+# target_amount and amount_saved.
+# deadline and is_completed status.
+# Automatic created_at and updated_at timestamps.
+class FinancialGoal(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='goals')
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True, null=True)
+    target_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    amount_saved = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    deadline = models.DateField(null=True, blank=True)
+    is_completed = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.name} - {self.user.username}"

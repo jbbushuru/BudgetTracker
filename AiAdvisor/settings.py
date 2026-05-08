@@ -96,11 +96,6 @@ DATABASES = {
         'PASSWORD': os.getenv('MYSQLPASSWORD'),
         'HOST': os.getenv('MYSQLHOST'),
         'PORT': os.getenv('MYSQLPORT'),
-        'OPTIONS': {
-            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-            # This ensures Django treats it as MariaDB
-        
-        },
     }
 }
 

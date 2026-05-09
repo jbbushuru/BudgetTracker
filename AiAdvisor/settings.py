@@ -89,14 +89,10 @@ WSGI_APPLICATION = 'AiAdvisor.wsgi.application'
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.mysql',
-        'NAME':os.environ['MYSQL_DATABASE'],
-        'USER': os.environ['MYSQLUSER'],
-        'PASSWORD': os.environ['MYSQLPASSWORD'],
-        'HOST': os.environ['MYSQLHOST'],
-        'PORT': os.environ['MYSQLPORT'],
-    }
+    'default': dj_database_url.config(
+        env='MYSQL_URL',
+        default='sqlite:///db.sqlite3'
+    )
 }
 
 

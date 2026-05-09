@@ -26,13 +26,13 @@ load_dotenv(os.path.join(BASE_DIR, '.env'))
 # Use the keys from .env
 SECRET_KEY = os.getenv('SECRET_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-
+IP_ADDRESS = os.getenv('IP_ADDRESS')
 
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'corsheaders',
     'rest_framework',
     'rest_framework.authtoken',
     'Advisor',
@@ -53,6 +54,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -145,3 +147,4 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ]
 }
+CORS_ALLOW_ALL_ORIGINS = True

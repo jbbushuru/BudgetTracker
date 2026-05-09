@@ -5,41 +5,73 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
-from .models import Transaction
-from .models import Category
+# imported additional FinancialGoal model and corresponding serializer
+from .models import Transaction, Category, FinancialGoal
+from .serializers import FinancialGoalSerializer, TransactionSerializer
 from .ai_parser import SMSParserService
 from django.db.models import Sum
 from django.utils import timezone
+#imported to handle date and time calculations for the weekly aggregations
+from datetime import timedelta, datetime
 from decimal import Decimal
+
+# added a function to handle processing of a single transaction. 
+# I separated this part from the initial SMSIngestionView to prevent duplicate code for Batch processing
+def process_single_transaction(user, raw_sms, audit_result):
+    """
+    Handles categorization and database creation.
+    Priority: 1. User History (Smart Match) -> 2. AI Suggestion -> 3. Pending
+    """
+    # 1. Look for a previous category for this recipient (Smart Match)
+    existing_category_id = Transaction.objects.filter(
+        user=user, 
+        recipient=audit_result.get('recipient'),
+        is_pending_categorization=False
+    ).order_by('-timestamp').values_list('category_id', flat=True).first()
+
+    # 2. If no history, use the AI's suggested category
+    ai_category_id = None
+    if not existing_category_id and 'suggested_category' in audit_result:
+        ai_category_id = Category.objects.filter(
+            name=audit_result['suggested_category']
+        ).values_list('id', flat=True).first()
+
+    final_category_id = existing_category_id or ai_category_id
+
+    return Transaction.objects.create(
+        user=user,
+        source='MPESA',
+        transaction_type=audit_result.get('transaction_type', 'OUT'),
+        sms_batch=raw_sms,
+        amount=audit_result.get('amount'),
+        fee=audit_result.get('fee', 0.00),
+        recipient=audit_result.get('recipient'),
+        category_id=final_category_id,
+        timestamp=audit_result.get('timestamp'),
+        is_pending_categorization=False if final_category_id else True
+    )
 
 class SMSIngestionView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        raw_sms = request.data.get('sms_text')
+        # Support both 'sms_text' and 'body' for flexibility
+        raw_sms = request.data.get('sms_text') or request.data.get('body')
         
         if not raw_sms:
             return Response({"error": "No SMS text provided"}, status=400)
 
         # 1. AI Auditor determines IN/OUT and strips the data
         parser = SMSParserService()
-        audit_result = parser.parse_mpesa_sms(raw_sms)
+        audit_result = parser.parse_mpesa_sms(raw_sms, user=request.user)
 
         if not audit_result:
             return Response({"error": "Failed to audit data"}, status=500)
 
-        # 2. Create the transaction record
+        # 2. Process and save using shared logic (includes Smart Matching)
         try:
-            transaction = Transaction.objects.create(
-                user=request.user,
-                source='MPESA',
-                transaction_type=audit_result.get('transaction_type', 'OUT'),
-                sms_batch=raw_sms,
-                amount=audit_result.get('amount'),
-                fee=audit_result.get('fee', 0.00),
-                recipient=audit_result.get('recipient'),
-                is_pending_categorization=True
-            )
+            #creation of a transaction done hear using the function i "added" in line 17
+            transaction = process_single_transaction(request.user, raw_sms, audit_result)
             return Response({
                 "needs_categorization": transaction.is_pending_categorization,
                 "transaction_id": transaction.id,
@@ -51,6 +83,72 @@ class SMSIngestionView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=400)
+
+#added logic to handle SMS batches
+class SMSBatchIngestionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        transactions_data = request.data.get('transactions', [])
+        
+        if not transactions_data:
+            return Response({"error": "No transactions provided"}, status=400)
+
+        parser = SMSParserService()
+        processed_count = 0
+        errors = []
+
+        # All transactions are now handled by the AI to ensure accurate parsing of dates/amounts
+        all_sms = [item.get('body') for item in transactions_data if item.get('body')]
+        
+        if all_sms:
+            CHUNK_SIZE = 30
+            for i in range(0, len(all_sms), CHUNK_SIZE):
+                if i > 0:
+                    import time
+                    time.sleep(1) # RPM limit safety
+
+                chunk_texts = all_sms[i:i + CHUNK_SIZE]
+                audit_results = parser.parse_mpesa_batch(chunk_texts, user=request.user)
+
+                for raw_sms, audit_result in zip(chunk_texts, audit_results):
+                    if not audit_result or not audit_result.get('recipient'):
+                        errors.append(f"Failed to parse: {raw_sms[:20]}...")
+                        continue
+
+                    try:
+                        process_single_transaction(request.user, raw_sms, audit_result)
+                        processed_count += 1
+                    except Exception as e:
+                        errors.append(str(e))
+
+        return Response({
+            "processed_count": processed_count,
+            "fast_tracked": processed_count - len([e for e in errors if "Failed to parse" in e]), # Approximate
+            "errors": errors
+        }, status=status.HTTP_201_CREATED)
+
+class PendingTransactionsView(APIView):
+    """
+    GET: Returns all transactions that need categorization for the current user.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        pending = Transaction.objects.filter(
+            user=request.user, 
+            is_pending_categorization=True
+        ).order_by('-timestamp')
+        
+        data = [{
+            "id": t.id,
+            "amount": float(t.amount),
+            "recipient": t.recipient,
+            "timestamp": t.timestamp,
+            "type": t.transaction_type
+        } for t in pending]
+        
+        return Response(data)
 
 class CategorizeTransactionView(APIView):
     """
@@ -168,9 +266,8 @@ class BudgetSummaryView(APIView):
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
         # 4. Calculation Logic
-        # We use the monthly_income you've stored in your Profile
-        monthly_income = profile.monthly_income
-        remaining_budget = (monthly_income + total_received) - total_spent
+        #used the budget field i added to calculate available balance.
+        remaining_budget = (profile.budget) - total_spent
 
         # 5. Spent Per Category breakdown
         # We group by the category name and sum the amounts
@@ -181,26 +278,130 @@ class BudgetSummaryView(APIView):
             timestamp__year=now.year
         ).values(
             'category__name', 
-            'category__icon_name', 
+            'category__icon_name',
+            #added color code as a field returned
+            'category__color_code',
             'category__is_essential'
         ).annotate(
             total_amount=Sum('amount')
         ).order_by('-total_amount')
 
+        # 6. Weekly Spend (Monday to Today)
+        current_time = timezone.localtime(timezone.now())
+        days_since_monday = current_time.weekday()
+        monday_date = (current_time - timedelta(days=days_since_monday)).date()
+        
+        weekly_spend = []
+        for i in range(days_since_monday + 1):
+            day_date = monday_date + timedelta(days=i)
+            day_total = Transaction.objects.filter(
+                user=user,
+                transaction_type='OUT',
+                timestamp__date=day_date
+            ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+            weekly_spend.append(float(day_total))
+
         return Response({
             "month": now.strftime("%B %Y"),
             "summary": {
-                "income_baseline": float(monthly_income),
+                #made budget the income baseline.
+                "income_baseline": float(profile.budget),
                 "total_received": float(total_received),
                 "total_spent": float(total_spent),
-                "remaining_balance": float(remaining_budget)
+                "remaining_balance": float(remaining_budget),
+                "weekly_spend": weekly_spend
             },
             "category_spending": [
                 {
                     "category": item['category__name'] or "Uncategorized",
                     "icon": item['category__icon_name'],
+                    #added colo code to be sent as part of the response
+                    "color": item['category__color_code'] or "#94A3B8",
                     "is_essential": item['category__is_essential'],
                     "amount_spent": float(item['total_amount'])
                 } for item in category_breakdown
             ]
         })
+
+# I implemented standard RESTful endpoints for the goals:
+# GET /api/finance/goals/: Fetch all goals for the user.
+# POST /api/finance/goals/: Create a new goal.
+# PATCH /api/finance/goals/<id>/: Update a goal (e.g., adding savings).
+# DELETE /api/finance/goals/<id>/: Remove a goal.
+class FinancialGoalView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        goals = FinancialGoal.objects.filter(user=request.user).order_by('-created_at')
+        serializer = FinancialGoalSerializer(goals, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = FinancialGoalSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class FinancialGoalDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        try:
+            goal = FinancialGoal.objects.get(pk=pk, user=request.user)
+            serializer = FinancialGoalSerializer(goal, data=request.data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except FinancialGoal.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+class TransactionListView(APIView):
+    """
+    GET: Returns a paginated list of transactions, with optional month/year filtering.
+    Endpoint: /finance/transactions/?month=5&year=2026&page=1
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        month = request.query_params.get('month')
+        year = request.query_params.get('year')
+        
+        # Base Queryset
+        queryset = Transaction.objects.filter(user=user).order_by('-timestamp')
+        
+        # Filtering by date if provided
+        if month:
+            queryset = queryset.filter(timestamp__month=month)
+        if year:
+            queryset = queryset.filter(timestamp__year=year)
+            
+        # Basic Manual Pagination
+        page_size = 20
+        try:
+            page = int(request.query_params.get('page', 1))
+        except ValueError:
+            page = 1
+            
+        start = (page - 1) * page_size
+        end = start + page_size
+        
+        transactions = queryset[start:end]
+        serializer = TransactionSerializer(transactions, many=True)
+        
+        return Response({
+            "transactions": serializer.data,
+            "has_next": queryset.count() > end,
+            "page": page,
+            "total_count": queryset.count()
+        })
+
+    def delete(self, request, pk):
+        try:
+            goal = FinancialGoal.objects.get(pk=pk, user=request.user)
+            goal.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except FinancialGoal.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)

@@ -91,11 +91,11 @@ WSGI_APPLICATION = 'AiAdvisor.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME':os.environ('MYSQL_DATABASE'),
-        'USER': os.environ('MYSQLUSER'),
-        'PASSWORD': os.environ('MYSQLPASSWORD'),
-        'HOST': os.environ('MYSQLHOST'),
-        'PORT': os.environ('MYSQLPORT'),
+        'NAME':os.environ['MYSQL_DATABASE'],
+        'USER': os.environ['MYSQLUSER'],
+        'PASSWORD': os.environ['MYSQLPASSWORD'],
+        'HOST': os.environ['MYSQLHOST'],
+        'PORT': os.environ['MYSQLPORT'],
     }
 }
 

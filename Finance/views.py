@@ -1,22 +1,98 @@
-from django.shortcuts import render
-
-# Create your views here.
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
-# imported additional FinancialGoal model and corresponding serializer
+# imported additional CategorySerializer
 from .models import Transaction, Category, FinancialGoal
-from .serializers import FinancialGoalSerializer, TransactionSerializer
+from .serializers import CategorySerializer, FinancialGoalSerializer, TransactionSerializer
 from .ai_parser import SMSParserService
-from django.db.models import Sum
+from django.db.models import Sum, Q
 from django.utils import timezone
-#imported to handle date and time calculations for the weekly aggregations
-from datetime import timedelta, datetime
+from datetime import timedelta
 from decimal import Decimal
 
-# added a function to handle processing of a single transaction. 
-# I separated this part from the initial SMSIngestionView to prevent duplicate code for Batch processing
+# ---------------------------------------------------------------------------
+# Category CRUD
+# ---------------------------------------------------------------------------
+class CategoryListView(APIView):
+    """
+    GET:  Returns all categories visible to the user
+          (system-wide categories where owner=None, plus the user's own).
+    POST: Creates a new user-owned category.
+    Endpoint: /finance/categories/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        categories = Category.objects.filter(
+            Q(owner=None) | Q(owner=request.user)
+        ).order_by('name')
+        serializer = CategorySerializer(categories, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = CategorySerializer(data=request.data)
+        if serializer.is_valid():
+            # Force the owner to be the authenticated user — no spoofing
+            serializer.save(owner=request.user)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class CategoryDetailView(APIView):
+    """
+    PATCH:  Updates a user-owned category (system categories cannot be edited).
+    DELETE: Deletes a user-owned category (system categories cannot be deleted).
+    Endpoint: /finance/categories/<int:pk>/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def _get_user_category(self, pk, user):
+        """
+        Helper: Fetch a category that belongs to this user.
+        Returns (category, error_response).
+        """
+        try:
+            category = Category.objects.get(pk=pk)
+        except Category.DoesNotExist:
+            return None, Response({"error": "Category not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # System categories have owner=None — no one can modify them
+        if category.owner is None:
+            return None, Response(
+                {"error": "System categories cannot be modified or deleted"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Users can only modify their own categories
+        if category.owner != user:
+            return None, Response(
+                {"error": "You do not have permission to modify this category"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        return category, None
+
+    def patch(self, request, pk):
+        category, error = self._get_user_category(pk, request.user)
+        if error:
+            return error
+
+        serializer = CategorySerializer(category, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        category, error = self._get_user_category(pk, request.user)
+        if error:
+            return error
+
+        category.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+# ---------------------------------------------------------------------------
+
+
 def process_single_transaction(user, raw_sms, audit_result):
     """
     Handles categorization and database creation.

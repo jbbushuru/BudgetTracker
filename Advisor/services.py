@@ -11,15 +11,14 @@ from django.conf import settings
 # Direct imports for Type Hinting and IDE navigation
 from Users.models import Profile  
 from Advisor.models import ChatMessage
+from Finance.models import Transaction, Category
+from .models import Nudge  
+from datetime import  datetime
+from django.db.models import  Q,Sum
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-@dataclass
-class ChatNudge:
-    type: str 
-    message: str 
-    impact_on_goal: str 
-    suggested_action: str 
 
 @dataclass
 class FinancialInstrument:
@@ -31,7 +30,6 @@ class FinancialInstrument:
 @dataclass
 class AdvisorResponse:
     ai_message: str
-    nudges: List[ChatNudge]
     suggested_questions: List[str]
     relevant_instruments: List[FinancialInstrument]
     timestamp: str
@@ -87,14 +85,6 @@ class AdvisorService:
         JSON SCHEMA:
         {{
             "ai_message": "Your advice string here",
-            "nudges": [
-                {{
-                    "type": "WARNING",
-                    "message": "text",
-                    "impact_on_goal": "text",
-                    "suggested_action": "text"
-                }}
-            ],
             "suggested_questions": ["question 1"],
             "relevant_instruments": [
                 {{
@@ -138,7 +128,6 @@ class AdvisorService:
 
             return AdvisorResponse(
                 ai_message=raw_data.get('ai_message', "Sawa! Let's talk about your money."),
-                nudges=[ChatNudge(**n) for n in raw_data.get('nudges', []) if isinstance(n, dict)],
                 suggested_questions=raw_data.get('suggested_questions', []),
                 relevant_instruments=[FinancialInstrument(**i) for i in raw_data.get('relevant_instruments', []) if isinstance(i, dict)],
                 timestamp=datetime.now().isoformat()
@@ -148,8 +137,84 @@ class AdvisorService:
             logger.error(f"Advisor Service Error: {e}")
             return AdvisorResponse(
                 ai_message="Pole sana! My connection is a bit shaky. Can you repeat that?",
-                nudges=[],
                 suggested_questions=["Try again?"],
                 relevant_instruments=[],
                 timestamp=datetime.now().isoformat()
             )
+import json
+
+
+def generate_automated_nudges(self, user):
+    now = timezone.now()
+    profile = user.profile
+    categories = Category.objects.filter(Q(owner=user) | Q(owner__isnull=True))
+    
+    analysis_data = []
+    for cat in categories:
+        # Calculate daily spike
+        today_spent = Transaction.objects.filter(
+            user=user, category=cat, timestamp__date=now.date()
+        ).aggregate(total=Sum('amount'))['total'] or 0
+        
+        # Calculate monthly progress
+        month_spent = Transaction.objects.filter(
+            user=user, category=cat, timestamp__month=now.month
+        ).aggregate(total=Sum('amount'))['total'] or 0
+
+        if cat.monthly_limit > 0:  # Only analyze categories with set limits
+            analysis_data.append({
+                "category": cat.name,
+                "monthly_limit": float(cat.monthly_limit),
+                "spent_today": float(today_spent),
+                "spent_month_to_date": float(month_spent)
+            })
+
+    # Instructions for Finn
+    system_instr = f"""
+    ROLE: Finn, the Auditor.
+    TASK: Analyze the provided spending data vs limits.
+    CONTEXT: User goal is {profile.financial_goal} (Ruai Land 2027).
+    
+    RULES:
+    1. If spent_today > 20% of monthly_limit, create a WARNING nudge.
+    2. Focus on how this specific category affects the Ruai goal.
+    3. Keep 'message' under 15 words.
+    
+    JSON SCHEMA:
+    {{
+        "nudges": [
+            {{
+                "type": "WARNING",
+                "message": "string",
+                "impact_on_goal": "string",
+                "suggested_action": "string"
+            }}
+        ]
+    }}
+    """
+
+    try:
+        client = self._get_client()
+        response = client.models.generate_content(
+            model=self.flash_model,
+            contents=f"Data: {json.dumps(analysis_data)}",
+            config=types.GenerateContentConfig(
+                system_instruction=system_instr,
+                response_mime_type="application/json"
+            )
+        )
+        
+        raw_nudges = json.loads(response.text).get('nudges', [])
+        
+        # Save each AI-generated nudge as a separate entity
+        for n in raw_nudges:
+            Nudge.objects.create(
+                user=user,
+                type=n['type'],
+                message=n['message'],
+                impact_on_goal=n['impact_on_goal'],
+                suggested_action=n['suggested_action']
+            )
+
+    except Exception as e:
+        logger.error(f"Nudge Generation Error: {e}")

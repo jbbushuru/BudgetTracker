@@ -14,6 +14,10 @@ from django.utils import timezone
 #imported to handle date and time calculations for the weekly aggregations
 from datetime import timedelta, datetime
 from decimal import Decimal
+from django.db.models import Q, Sum
+from django.utils import timezone
+from decimal import Decimal
+
 
 # added a function to handle processing of a single transaction. 
 # I separated this part from the initial SMSIngestionView to prevent duplicate code for Batch processing
@@ -358,45 +362,49 @@ class FinancialGoalDetailView(APIView):
             return Response(status=status.HTTP_404_NOT_FOUND)
 
 class TransactionListView(APIView):
-    """
-    GET: Returns a paginated list of transactions, with optional month/year filtering.
-    Endpoint: /finance/transactions/?month=5&year=2026&page=1
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         user = request.user
-        month = request.query_params.get('month')
-        year = request.query_params.get('year')
         
-        # Base Queryset
-        queryset = Transaction.objects.filter(user=user).order_by('-timestamp')
-        
-        # Filtering by date if provided
-        if month:
-            queryset = queryset.filter(timestamp__month=month)
-        if year:
-            queryset = queryset.filter(timestamp__year=year)
-            
-        # Basic Manual Pagination
-        page_size = 20
+        # 1. Get Query Params with defaults
         try:
-            page = int(request.query_params.get('page', 1))
+            limit = int(request.query_params.get('limit', 20))
+            offset = int(request.query_params.get('offset', 0))
         except ValueError:
-            page = 1
-            
-        start = (page - 1) * page_size
-        end = start + page_size
-        
-        transactions = queryset[start:end]
-        serializer = TransactionSerializer(transactions, many=True)
-        
+            limit = 20
+            offset = 0
+
+        # 2. Base Queryset (Filtered for safety)
+        queryset = Transaction.objects.filter(user=user).order_by('-timestamp')
+        total_count = queryset.count()
+
+        # 3. Dynamic Slicing [start:end]
+        transactions = queryset[offset : offset + limit]
+
+        # 4. Building the Custom Response Schema
+        results = []
+        for t in transactions:
+            results.append({
+                "_id": f"t_{t.id}", # Matches your t_001 format
+                "source": t.get_source_display() if t.source else "MPesa",
+                "raw_content": t.sms_batch or "Manual entry",
+                "structured_data": {
+                    "amount": float(t.amount),
+                    "transaction_fee": float(t.fee),
+                    "category_id": f"cat_{t.category.id}" if t.category else None,
+                    "category_name": t.category.name if t.category else "Uncategorized",
+                    "recipient": t.recipient
+                },
+                "timestamp": t.timestamp.isoformat()
+            })
+
         return Response({
-            "transactions": serializer.data,
-            "has_next": queryset.count() > end,
-            "page": page,
-            "total_count": queryset.count()
-        })
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset,
+            "results": results
+        }, status=status.HTTP_200_OK)
 
     def delete(self, request, pk):
         try:
@@ -405,3 +413,39 @@ class TransactionListView(APIView):
             return Response(status=status.HTTP_204_NO_CONTENT)
         except FinancialGoal.DoesNotExist:
             return Response(status=status.HTTP_404_NOT_FOUND)
+        
+class BudgetSummaryView(APIView):
+    def get(self, request):
+        user = request.user
+        now = timezone.now()
+        
+        # Fetch all relevant categories
+        categories = Category.objects.filter(models.Q(owner=user) | models.Q(owner__isnull=True))
+        
+        category_data = []
+        for cat in categories:
+            total_spent = Transaction.objects.filter(
+                user=user, 
+                category=cat, 
+                transaction_type='OUT',
+                timestamp__month=now.month
+            ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+
+            # Calculate usage percentage
+            limit = cat.monthly_limit
+            percent_used = (total_spent / limit * 100) if limit > 0 else 0
+
+            category_data.append({
+                "id": cat.id,
+                "name": cat.name,
+                "icon": cat.icon_name,
+                "color": cat.color_code,
+                "spent": float(total_spent),
+                "limit": float(limit),
+                "percent_used": float(percent_used)
+            })
+
+        return Response({
+            "total_budget": float(sum(c.monthly_limit for c in categories)),
+            "categories": category_data
+        })

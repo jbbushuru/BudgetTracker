@@ -98,6 +98,12 @@ def process_single_transaction(user, raw_sms, audit_result):
     Handles categorization and database creation.
     Priority: 1. User History (Smart Match) -> 2. AI Suggestion -> 3. Pending
     """
+    # 0. Idempotency Check: Prevent duplicate SMS parsing
+    if raw_sms:
+        existing_txn = Transaction.objects.filter(user=user, sms_batch=raw_sms).first()
+        if existing_txn:
+            return existing_txn
+
     # 1. Look for a previous category for this recipient (Smart Match)
     existing_category_id = Transaction.objects.filter(
         user=user, 

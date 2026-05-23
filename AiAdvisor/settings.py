@@ -151,6 +151,10 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 # This tells WhiteNoise to handle the files and compress them (makes it fast)
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 AUTH_USER_MODEL = 'Users.User'
+AUTHENTICATION_BACKENDS = [
+    'Users.backends.EmailOrPhoneBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',

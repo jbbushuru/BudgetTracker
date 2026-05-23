@@ -4,6 +4,10 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.authtoken.views import ObtainAuthToken
+from rest_framework.authtoken.models import Token
+from rest_framework import serializers
+from django.contrib.auth import authenticate
 
 from .models import Profile
 from .serializers import SignupSerializer, ProfileSerializer
@@ -73,3 +77,46 @@ class AccountDeleteView(APIView):
         return Response({
             "message": "Account and associated profile deleted successfully."
         }, status=status.HTTP_204_NO_CONTENT)
+
+class CustomAuthTokenSerializer(serializers.Serializer):
+    username = serializers.CharField(required=False)
+    email = serializers.CharField(required=False)
+    phone_number = serializers.CharField(required=False)
+    password = serializers.CharField(style={'input_type': 'password'}, trim_whitespace=False)
+
+    def validate(self, attrs):
+        username = attrs.get('username')
+        email = attrs.get('email')
+        phone_number = attrs.get('phone_number')
+        password = attrs.get('password')
+
+        login_identifier = username or email or phone_number
+
+        if login_identifier and password:
+            user = authenticate(request=self.context.get('request'),
+                                username=login_identifier, password=password)
+
+            if not user:
+                msg = 'Unable to log in with provided credentials.'
+                raise serializers.ValidationError(msg, code='authorization')
+        else:
+            msg = 'Must include "username", "email" or "phone_number" and "password".'
+            raise serializers.ValidationError(msg, code='authorization')
+
+        attrs['user'] = user
+        return attrs
+
+class CustomAuthToken(ObtainAuthToken):
+    serializer_class = CustomAuthTokenSerializer
+    
+    def post(self, request, *args, **kwargs):
+        serializer = self.serializer_class(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        user = serializer.validated_data['user']
+        token, created = Token.objects.get_or_create(user=user)
+        return Response({
+            'token': token.key,
+            'user_id': user.pk,
+            'email': user.email,
+            'phone_number': getattr(user, 'phone_number', None)
+        })

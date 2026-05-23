@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import FinancialGoal, Transaction, Category
+from .models import FinancialGoal, Transaction, Category, CategoryLimit
 
 #new serializers
 class CategorySerializer(serializers.ModelSerializer):
@@ -27,19 +27,34 @@ class TransactionSerializer(serializers.ModelSerializer):
         ]
 
 
+class CategoryLimitSerializer(serializers.ModelSerializer):
+    # Matches 'cat_id' from your mobile app code
+    cat_id = serializers.IntegerField(source='category_id')
+    
+    # Matches 'monthly_limits' from your mobile app code
+    monthly_limits = serializers.DecimalField(
+        source='monthly_limit', 
+        max_digits=12, 
+        decimal_places=2
+    )
+
+    class Meta:
+        model = CategoryLimit
+        fields = ['cat_id', 'monthly_limits']
+
 # I created a new serializer to handle the conversion between Python objects and the JSON format my React Native app expects.
 # It includes:
-# name, description, target_amount, amount_saved, deadline, is_completed.
-# read_only_fields for id and user.
-# A create method to automatically set the user.
+# name, description, target_amount, amount_saved, deadline, is_completed, and category.
 class FinancialGoalSerializer(serializers.ModelSerializer):
+    category = CategorySerializer(read_only=True)
+
     class Meta:
         model = FinancialGoal
         fields = [
             'id', 'name', 'description', 'target_amount', 
-            'amount_saved', 'deadline', 'is_completed'
+            'amount_saved', 'deadline', 'is_completed', 'category'
         ]
-        read_only_fields = ['id', 'user']
+        read_only_fields = ['id', 'user', 'category']
 
     def create(self, validated_data):
         validated_data['user'] = self.context['request'].user

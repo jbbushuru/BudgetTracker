@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     'Finance',
     'Users',
     'Engine',
+    'django_q',
 ]
 
 MIDDLEWARE = [
@@ -164,3 +165,16 @@ REST_FRAMEWORK = {
     ]
 }
 CORS_ALLOW_ALL_ORIGINS = True
+
+Q_CLUSTER = {
+    'name': 'AiAdvisor',
+    'workers': 4,
+    'recycle': 500,
+    'timeout': 60,
+    'compress': True,
+    'save_limit': 250,
+    'queue_limit': 500,
+    'cpu_affinity': 1,
+    'label': 'Django Q',
+    'orm': 'default'
+}

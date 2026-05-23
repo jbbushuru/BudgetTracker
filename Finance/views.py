@@ -178,7 +178,10 @@ class SMSIngestionView(APIView):
         except Exception as e:
             return Response({"error": str(e)}, status=400)
 
-#added logic to handle SMS batches
+from django_q.tasks import async_task
+from django_q.models import Task, OrmQ
+
+#added logic to handle SMS batches via background tasks
 class SMSBatchIngestionView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -188,39 +191,37 @@ class SMSBatchIngestionView(APIView):
         if not transactions_data:
             return Response({"error": "No transactions provided"}, status=400)
 
-        parser = SMSParserService()
-        processed_count = 0
-        errors = []
-
-        # All transactions are now handled by the AI to ensure accurate parsing of dates/amounts
-        all_sms = [item.get('body') for item in transactions_data if item.get('body')]
-        
-        if all_sms:
-            CHUNK_SIZE = 30
-            for i in range(0, len(all_sms), CHUNK_SIZE):
-                if i > 0:
-                    import time
-                    time.sleep(1) # RPM limit safety
-
-                chunk_texts = all_sms[i:i + CHUNK_SIZE]
-                audit_results = parser.parse_mpesa_batch(chunk_texts, user=request.user)
-
-                for raw_sms, audit_result in zip(chunk_texts, audit_results):
-                    if not audit_result or not audit_result.get('recipient'):
-                        errors.append(f"Failed to parse: {raw_sms[:20]}...")
-                        continue
-
-                    try:
-                        process_single_transaction(request.user, raw_sms, audit_result)
-                        processed_count += 1
-                    except Exception as e:
-                        errors.append(str(e))
+        # Enqueue the background task
+        task_id = async_task('Finance.tasks.process_sms_batch_task', request.user.id, transactions_data)
 
         return Response({
-            "processed_count": processed_count,
-            "fast_tracked": processed_count - len([e for e in errors if "Failed to parse" in e]), # Approximate
-            "errors": errors
-        }, status=status.HTTP_201_CREATED)
+            "message": "Batch processing started.",
+            "task_id": task_id
+        }, status=status.HTTP_202_ACCEPTED)
+
+class ParseJobStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, job_id):
+        # First, check if the task has completed (success or failure)
+        try:
+            task = Task.objects.get(id=job_id)
+            return Response({
+                "task_id": task.id,
+                "status": "completed" if task.success else "failed",
+                "result": task.result
+            }, status=status.HTTP_200_OK)
+        except Task.DoesNotExist:
+            pass
+
+        # If not completed, check if it is still pending in the queue
+        if OrmQ.objects.filter(task_id=job_id).exists():
+            return Response({
+                "task_id": job_id,
+                "status": "pending"
+            }, status=status.HTTP_200_OK)
+
+        return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
 class CategorizeTransactionView(APIView):

@@ -1,3 +1,8 @@
 from django.contrib import admin
 
-# Register your models here.
+from .models import Category, Transaction, FinancialGoal, CategoryLimit
+
+admin.site.register(Category)
+admin.site.register(Transaction)
+admin.site.register(FinancialGoal)
+admin.site.register(CategoryLimit)

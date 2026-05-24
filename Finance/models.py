@@ -49,6 +49,13 @@ class Transaction(models.Model):
 # Automatic created_at and updated_at timestamps.
 class FinancialGoal(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='goals')
+    category = models.OneToOneField(
+        'Category', 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True, 
+        related_name='linked_goal'
+    )
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True)
     target_amount = models.DecimalField(max_digits=12, decimal_places=2)
@@ -60,3 +67,15 @@ class FinancialGoal(models.Model):
 
     def __str__(self):
         return f"{self.name} - {self.user.username}"
+
+class CategoryLimit(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    category = models.ForeignKey('Category', on_delete=models.CASCADE)
+    monthly_limit = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+
+    class Meta:
+        # Prevents duplicate limits for the same category
+        unique_together = ('user', 'category')
+
+    def __str__(self):
+        return f"{self.category.name}: {self.monthly_limit}"

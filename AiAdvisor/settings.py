@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 import os
+import dj_database_url
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -26,7 +27,6 @@ load_dotenv(os.path.join(BASE_DIR, '.env'))
 # Use the keys from .env
 SECRET_KEY = os.getenv('SECRET_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-IP_ADDRESS = os.getenv('IP_ADDRESS')
 
 
 # SECURITY WARNING: don't run with debug turned on in production!
@@ -51,11 +51,13 @@ INSTALLED_APPS = [
     'Finance',
     'Users',
     'Engine',
+    'django_q',
 ]
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -88,18 +90,24 @@ WSGI_APPLICATION = 'AiAdvisor.wsgi.application'
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'advisor',
-        'USER': 'root',
-        'PASSWORD': '',
-        'HOST': '127.0.0.1',
-        'PORT': '3306',
-        'OPTIONS': {
-            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-            # This ensures Django treats it as MariaDB
-        },
-    }
+    # production environment
+    'default': dj_database_url.config(
+        env='MYSQL_URL',
+        default='sqlite:///db.sqlite3'
+    )
+    # local development environment
+    # 'default': {
+    #     'ENGINE': 'django.db.backends.mysql',
+    #     'NAME': 'advisor',
+    #     'USER': 'root',
+    #     'PASSWORD': '',
+    #     'HOST': '127.0.0.1',
+    #     'PORT': '3306',
+    #     'OPTIONS': {
+    #         'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+    #         # This ensures Django treats it as MariaDB
+    #     },
+    # }
 }
 
 
@@ -138,7 +146,16 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+# This is where the server will gather all CSS/Images for production
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles') 
+
+# This tells WhiteNoise to handle the files and compress them (makes it fast)
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 AUTH_USER_MODEL = 'Users.User'
+AUTHENTICATION_BACKENDS = [
+    'Users.backends.EmailOrPhoneBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
@@ -148,3 +165,16 @@ REST_FRAMEWORK = {
     ]
 }
 CORS_ALLOW_ALL_ORIGINS = True
+
+Q_CLUSTER = {
+    'name': 'AiAdvisor',
+    'workers': 4,
+    'recycle': 500,
+    'timeout': 60,
+    'compress': True,
+    'save_limit': 250,
+    'queue_limit': 500,
+    'cpu_affinity': 1,
+    'label': 'Django Q',
+    'orm': 'default'
+}

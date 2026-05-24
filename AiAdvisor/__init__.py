@@ -22,4 +22,4 @@ except ImportError:
     # This handles cases where the database backend hasn't loaded yet
     pass
 
-print(f"Using Key: {os.getenv('GEMINI_API_KEY')}")
+# print(f"Using Key: {os.getenv('GEMINI_API_KEY')}")

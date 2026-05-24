@@ -10,7 +10,10 @@ from django.conf import settings
 
 # Direct imports for Type Hinting and IDE navigation
 from Users.models import Profile  
-from Advisor.models import ChatMessage
+from Advisor.models import ChatMessage, Nudge
+from Finance.models import Transaction, Category
+from django.db.models import Q, Sum
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -153,3 +156,78 @@ class AdvisorService:
                 relevant_instruments=[],
                 timestamp=datetime.now().isoformat()
             )
+
+    def generate_automated_nudges(self, user):
+        now = timezone.now()
+        profile = user.profile
+        categories = Category.objects.filter(Q(owner=user) | Q(owner__isnull=True))
+        
+        analysis_data = []
+        for cat in categories:
+            # Calculate daily spike
+            today_spent = Transaction.objects.filter(
+                user=user, category=cat, timestamp__date=now.date()
+            ).aggregate(total=Sum('amount'))['total'] or 0
+            
+            # Calculate monthly progress
+            month_spent = Transaction.objects.filter(
+                user=user, category=cat, timestamp__month=now.month
+            ).aggregate(total=Sum('amount'))['total'] or 0
+
+            if cat.monthly_limit > 0:  # Only analyze categories with set limits
+                analysis_data.append({
+                    "category": cat.name,
+                    "monthly_limit": float(cat.monthly_limit),
+                    "spent_today": float(today_spent),
+                    "spent_month_to_date": float(month_spent)
+                })
+
+        # Instructions for Finn
+        system_instr = f"""
+        ROLE: Finn, the Auditor.
+        TASK: Analyze the provided spending data vs limits.
+        CONTEXT: User goal is {profile.financial_goal} (Ruai Land 2027).
+        
+        RULES:
+        1. If spent_today > 20% of monthly_limit, create a WARNING nudge.
+        2. Focus on how this specific category affects the Ruai goal.
+        3. Keep 'message' under 15 words.
+        
+        JSON SCHEMA:
+        {{
+            "nudges": [
+                {{
+                    "type": "WARNING",
+                    "message": "string",
+                    "impact_on_goal": "string",
+                    "suggested_action": "string"
+                }}
+            ]
+        }}
+        """
+
+        try:
+            client = self._get_client()
+            response = client.models.generate_content(
+                model=self.flash_model,
+                contents=f"Data: {json.dumps(analysis_data)}",
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instr,
+                    response_mime_type="application/json"
+                )
+            )
+            
+            raw_nudges = json.loads(response.text).get('nudges', [])
+            
+            # Save each AI-generated nudge as a separate entity
+            for n in raw_nudges:
+                Nudge.objects.create(
+                    user=user,
+                    type=n.get('type', 'WARNING'),
+                    message=n.get('message', ''),
+                    impact_on_goal=n.get('impact_on_goal', ''),
+                    suggested_action=n.get('suggested_action', '')
+                )
+
+        except Exception as e:
+            logger.error(f"Nudge Generation Error: {e}")

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Conversation, ChatMessage
+from .models import Conversation, ChatMessage, Nudge
 
 class ConversationSerializer(serializers.ModelSerializer):
     _id = serializers.CharField(source='id')
@@ -16,3 +16,8 @@ class ChatMessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChatMessage
         fields = ['_id', 'conversation_id', 'role', 'content', 'category_referenced', 'timestamp']
+
+class NudgeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Nudge
+        fields = ['id', 'type', 'message', 'impact_on_goal', 'suggested_action', 'is_seen', 'created_at']

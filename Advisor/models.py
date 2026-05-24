@@ -59,12 +59,21 @@ class KnowledgeBase(models.Model):
     local_context = models.TextField() # e.g., "Accessible via *889#"
     last_updated = models.DateTimeField(auto_now=True)
 
-class AdvisoryLog(models.Model):
-    """
-    Research-focused log to track how triggers (e.g., overspending) 
-    resulted in specific AI responses.
-    """
+
+class Nudge(models.Model):
+    # Distinct entity from ChatMessage
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-    trigger_event = models.CharField(max_length=255) 
-    ai_response = models.TextField()
-    timestamp = models.DateTimeField(auto_now_add=True)
+    
+    # Nudge content
+    type = models.CharField(max_length=20, default="WARNING") # e.g., WARNING, INSIGHT, SUCCESS
+    message = models.TextField() # Short, punchy phrase
+    impact_on_goal = models.CharField(max_length=255) # Reference to the Ruai goal
+    suggested_action = models.CharField(max_length=255) # Actionable advice
+    
+    # Metadata
+    is_seen = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']

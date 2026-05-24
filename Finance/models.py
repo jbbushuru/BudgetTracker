@@ -12,6 +12,8 @@ class Category(models.Model):
     icon_name = models.CharField(max_length=30, default='category')
     # added field for the hex code
     color_code = models.CharField(max_length=10, default='#94A3B8')
+    monthly_limit = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    
     is_essential = models.BooleanField(default=False)
 
     class Meta:

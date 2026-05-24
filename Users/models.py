@@ -35,6 +35,13 @@ class Profile(models.Model):
     action_text = models.CharField(max_length=255, blank=True)
     recommendation_expires_at = models.DateTimeField(null=True, blank=True)
     push_token = models.CharField(max_length=255, blank=True)
+    @property
+    def total_budget(self):
+        """Automatically calculates the total budget from category limits."""
+        from Finance.models import Category
+        return Category.objects.filter(
+            models.Q(owner=self.user) | models.Q(owner__isnull=True)
+        ).aggregate(models.Sum('monthly_limit'))['monthly_limit__sum'] or Decimal('0.00')
 
     def __str__(self):
         return f"{self.user.username}'s Profile"

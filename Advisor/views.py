@@ -3,8 +3,8 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from django.db.models import Sum
-from .models import Conversation, ChatMessage
-from .serializers import ConversationSerializer, ChatMessageSerializer
+from .models import Conversation, ChatMessage,Nudge
+from .serializers import ConversationSerializer, ChatMessageSerializer,NudgeSerializer
 from .services import AdvisorService
 from Finance.models import Transaction 
 import logging
@@ -71,7 +71,8 @@ class MessageCreateView(APIView):
             content=ai_response_data.ai_message
         )
 
-        conversation.save() 
+        conversation.save()
+        advisor.generate_automated_nudges(request.user)
         
         return Response({
             "user_msg": ChatMessageSerializer(user_msg).data,
@@ -90,3 +91,22 @@ class ConversationDetailView(APIView):
             return Response({"error": "Conversation not found"}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+#  Mark as seen to prefent repopopupof the nudges.       
+class NudgeListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # Fetch only unseen nudges for the user
+        nudges = Nudge.objects.filter(user=request.user, is_seen=False)
+        serializer = NudgeSerializer(nudges, many=True)
+        return Response(serializer.data)
+
+    def patch(self, request, pk):
+        # Mark a specific nudge as seen
+        try:
+            nudge = Nudge.objects.get(id=pk, user=request.user)
+            nudge.is_seen = True
+            nudge.save()
+            return Response({"status": "nudge dismissed"})
+        except Nudge.DoesNotExist:
+            return Response(status=404)

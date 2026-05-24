@@ -30,6 +30,31 @@ class UserSignupView(APIView):
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+class UserLoginView(APIView):
+    """
+    POST: Takes username and password, returns Token and Profile Details.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        username = request.data.get('username')
+        password = request.data.get('password')
+
+        user = authenticate(username=username, password=password)
+
+        if user:
+            token, created = Token.objects.get_or_create(user=user)
+            profile = user.profile
+            return Response({
+                "token": token.key,
+                "user_id": user.id,
+                "profile_id": profile.id,
+                "username": user.username,
+                "message": f"Karibu, {user.first_name or user.username}!"
+            }, status=status.HTTP_200_OK)
+        
+        return Response({"error": "Invalid Credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+
 class ProfileUpdateView(APIView):
     """
     GET: Retrieves the profile and triggers AI recommendation updates.

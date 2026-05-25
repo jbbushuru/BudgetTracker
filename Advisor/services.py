@@ -256,7 +256,7 @@ class AdvisorService:
 
         system_instr = f"""
         ROLE: You are Finn, a concise Kenyan financial advisor.
-        TASK: Generate a short, motivational financial insight for this user's profile card.
+        TASK: Generate a personalized featured recommendation for this user's home screen card.
         
         USER PROFILE:
         - Active Financial Goals: {goals_str}
@@ -265,14 +265,18 @@ class AdvisorService:
         - Location: {profile.location or 'Nairobi'}
         - Existing Savings: KES {profile.existing_savings or 0}
         - Savings Target: KES {profile.savings_target or 0}
-        
+
         RULES:
-        1. 'personalized_hook' must be under 20 words. Make it specific to their most urgent goal.
-        2. 'action_text' must be a single, clear call-to-action under 10 words.
-        3. Return ONLY valid JSON.
+        1. 'title' must be a short financial topic (under 5 words, e.g., "Money Market Funds").
+        2. 'icon' must be a relevant MaterialIcons name (e.g., "wallet", "trending-up", "business", "cash", "shield-checkmark").
+        3. 'personalized_hook' must be under 25 words. Make it specific to their most urgent goal.
+        4. 'action_text' must be a clear call-to-action under 10 words (e.g., "Compare Options").
+        5. Return ONLY valid JSON.
         
         JSON SCHEMA:
         {{
+            "title": "string",
+            "icon": "string",
             "personalized_hook": "string",
             "action_text": "string"
         }}
@@ -292,13 +296,19 @@ class AdvisorService:
 
             raw_data = json.loads(response.text)
 
-            profile.personalized_hook = raw_data.get('personalized_hook', '')
-            profile.action_text = raw_data.get('action_text', '')
+            # Store all recommendation fields as a JSON blob in personalized_hook.
+            # The serializer unpacks this into the active_recommendation structure.
+            recommendation_payload = {
+                "title": raw_data.get('title', 'Featured Recommendation'),
+                "icon": raw_data.get('icon', 'star'),
+                "personalized_hook": raw_data.get('personalized_hook', ''),
+                "action_text": raw_data.get('action_text', ''),
+            }
+            profile.personalized_hook = json.dumps(recommendation_payload)
             profile.recommendation_expires_at = timezone.now() + timedelta(hours=24)
             profile.recommendation_last_updated = timezone.now()
             profile.save(update_fields=[
                 'personalized_hook',
-                'action_text',
                 'recommendation_expires_at',
                 'recommendation_last_updated'
             ])

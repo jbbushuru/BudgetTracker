@@ -1,6 +1,7 @@
 from rest_framework import serializers  # <--- This is the missing line!
 from django.contrib.auth import get_user_model
 from .models import Profile
+import json
 
 User = get_user_model()
 
@@ -62,6 +63,7 @@ class ProfileSerializer(serializers.ModelSerializer):
     demographic = serializers.SerializerMethodField()
     financial_context = serializers.SerializerMethodField()
     behavioural_context = serializers.SerializerMethodField()
+    active_recommendation = serializers.SerializerMethodField()
 
     class Meta:
         model = Profile
@@ -71,7 +73,9 @@ class ProfileSerializer(serializers.ModelSerializer):
             'age', 'occupation', 'location', 'monthly_income', 
             'savings_target', 'budget', 'fixed_costs', 'existing_savings',
             'financial_goal', 'risk_appetite', 'spending_temperament',
-            'demographic', 'financial_context', 'behavioural_context'
+            'demographic', 'financial_context', 'behavioural_context',
+            # AI recommendation: nested to match the frontend Profile interface
+            'active_recommendation',
         ]
 
     def get_demographic(self, obj):
@@ -96,3 +100,26 @@ class ProfileSerializer(serializers.ModelSerializer):
             "risk_appetite": obj.risk_appetite,
             "financial_goal": obj.financial_goal
         }
+
+    def get_active_recommendation(self, obj):
+        """
+        Unpacks the JSON blob stored in personalized_hook back into the
+        active_recommendation structure the frontend Profile interface expects.
+        Returns None if no recommendation has been generated yet.
+        """
+        if not obj.personalized_hook:
+            return None
+        try:
+            data = json.loads(obj.personalized_hook)
+            # Only treat it as a recommendation blob if it has a personalized_hook key
+            if 'personalized_hook' not in data:
+                return None
+            return {
+                "title": data.get('title', 'Featured Recommendation'),
+                "icon": data.get('icon', 'star'),
+                "personalized_hook": data.get('personalized_hook', ''),
+                "action_text": data.get('action_text', ''),
+                "expires_at": int(obj.recommendation_expires_at.timestamp()) if obj.recommendation_expires_at else None,
+            }
+        except (json.JSONDecodeError, AttributeError):
+            return None

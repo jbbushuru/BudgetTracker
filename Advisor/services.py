@@ -11,7 +11,7 @@ from django.conf import settings
 # Direct imports for Type Hinting and IDE navigation
 from Users.models import Profile  
 from Advisor.models import ChatMessage, Nudge
-from Finance.models import Transaction, Category
+from Finance.models import Transaction, Category, FinancialGoal
 from django.db.models import Q, Sum
 from django.utils import timezone
 
@@ -230,4 +230,80 @@ class AdvisorService:
                 )
 
         except Exception as e:
-            logger.error(f"Nudge Generation Error: {e}")
+            logger.error(f"Nudge Generation Error: {e}")
+
+    def generate_personalized_recommendation(self, profile: 'Profile'):
+        """
+        Called when the user's profile recommendation is stale (> 24 hours old).
+        Generates a fresh personalized hook and action text using Gemini,
+        then saves the results directly back to the Profile model.
+        """
+        from datetime import timedelta
+
+        # Fetch the user's active (incomplete) financial goals from the DB
+        user_goals = FinancialGoal.objects.filter(
+            user=profile.user, is_completed=False
+        ).values('name', 'target_amount', 'amount_saved', 'deadline')
+
+        if user_goals.exists():
+            goals_str = "\n".join([
+                f"  - {g['name']}: saved KES {g['amount_saved']} of KES {g['target_amount']}"
+                f"{' (deadline: ' + str(g['deadline']) + ')' if g['deadline'] else ''}"
+                for g in user_goals
+            ])
+        else:
+            goals_str = "  - No specific goals set yet (targeting Financial Stability)"
+
+        system_instr = f"""
+        ROLE: You are Finn, a concise Kenyan financial advisor.
+        TASK: Generate a short, motivational financial insight for this user's profile card.
+        
+        USER PROFILE:
+        - Active Financial Goals: {goals_str}
+        - Income: KES {profile.monthly_income or 0}
+        - Risk Appetite: {profile.risk_appetite or 'Moderate'}
+        - Location: {profile.location or 'Nairobi'}
+        - Existing Savings: KES {profile.existing_savings or 0}
+        - Savings Target: KES {profile.savings_target or 0}
+        
+        RULES:
+        1. 'personalized_hook' must be under 20 words. Make it specific to their most urgent goal.
+        2. 'action_text' must be a single, clear call-to-action under 10 words.
+        3. Return ONLY valid JSON.
+        
+        JSON SCHEMA:
+        {{
+            "personalized_hook": "string",
+            "action_text": "string"
+        }}
+        """
+
+        try:
+            client = self._get_client()
+            response = client.models.generate_content(
+                model=self.flash_model,
+                contents="Generate a personalized financial recommendation for this user.",
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instr,
+                    response_mime_type="application/json",
+                    temperature=0.8
+                )
+            )
+
+            raw_data = json.loads(response.text)
+
+            profile.personalized_hook = raw_data.get('personalized_hook', '')
+            profile.action_text = raw_data.get('action_text', '')
+            profile.recommendation_expires_at = timezone.now() + timedelta(hours=24)
+            profile.recommendation_last_updated = timezone.now()
+            profile.save(update_fields=[
+                'personalized_hook',
+                'action_text',
+                'recommendation_expires_at',
+                'recommendation_last_updated'
+            ])
+            logger.info(f"Personalized recommendation updated for user {profile.user_id}")
+
+        except Exception as e:
+            logger.error(f"Personalized Recommendation Error for user {profile.user_id}: {e}")
+
